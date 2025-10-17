@@ -53,6 +53,16 @@ BALL_SPEED = 5
 SCORE_FONT_SIZE = 56
 WIN_SCORE = 7  # Score to trigger final explosion & win
 
+# Physics tuning (new)
+BALL_MASS = 0.6
+PADDLE_MASS = 4.0
+BALL_MAX_SPEED = 14.0        # hard cap on ball speed
+BALL_DRAG = 0.997            # slight drag each frame
+SPIN_FACTOR = 0.28          # how much paddle motion imparts spin
+SPIN_DECAY = 0.96           # spin decay per frame
+BOUNCE_ELASTICITY = 1.03    # >1 adds slight speed-up on bounce (tweak for arcade feel)
+PADDLE_RECOIL = 2.4         # small recoil impulse applied to paddle on hit
+
 ASSETS_SOUNDS_DIR = os.path.join("assets", "sounds")
 HIT_WAV = os.path.join(ASSETS_SOUNDS_DIR, "tennis_hit.wav")
 EXPLOSION_WAV = os.path.join(ASSETS_SOUNDS_DIR, "explosion.wav")
@@ -232,19 +242,25 @@ def add_explosion(cx, cy, color, count=60):
         explosion_particles.append({'pos': [cx, cy], 'vel':[vx, vy], 'life': random.uniform(0.9, 1.6), 'age':0, 'color': color, 'size': random.uniform(3.5, 9.0)})
 
 def update_particles(dt):
+    # update small trail particles
     for p in particles[:]:
         p['age'] += dt
         p['pos'][0] += p['vel'][0] * 60 * dt
         p['pos'][1] += p['vel'][1] * 60 * dt
+        # apply slight gravity-ish or downward bias for style (small)
+        p['vel'][1] += 0.08 * dt * 60
         if p['age'] >= p['life']:
             particles.remove(p)
+    # update explosion particles with damping
     for p in explosion_particles[:]:
         p['age'] += dt
         p['pos'][0] += p['vel'][0] * 60 * dt
         p['pos'][1] += p['vel'][1] * 60 * dt
-        # slow down
-        p['vel'][0] *= 0.98
-        p['vel'][1'] *= 0.98 if False else p['vel'][1]  # harmless no-op to keep formatting safe
+        # dampen velocities to simulate air resistance
+        p['vel'][0] *= 0.985
+        p['vel'][1] *= 0.985
+        # gravity pull for explosion bits
+        p['vel'][1] += 0.45 * dt * 60
         if p['age'] >= p['life']:
             explosion_particles.remove(p)
 
@@ -276,4 +292,158 @@ def draw_paddle_shape(surf, rect, color, fin_color):
         highlight = color
     pygame.draw.rect(surf, highlight, inner, border_radius=int(inner.width/2))
 
-# ... (file continues with rest of content)
+# Creative shapes helpers continued (Paddle, Ball, draw, etc.)
+
+# Paddle class with inertia and recoil
+class Paddle:
+    def __init__(self, x, y):
+        self.rect = pygame.Rect(x, y, PADDLE_WIDTH, PADDLE_HEIGHT)
+        self.speed = PADDLE_SPEED
+        self.vel = 0.0
+        self._target_vel = 0.0
+        self.inertia = 0.6
+
+    def move(self, dy):
+        self._target_vel = dy
+        self.vel = self.vel * self.inertia + self._target_vel * (1.0 - self.inertia)
+        if self.vel < 0:
+            self.rect.y = max(self.rect.y + int(self.vel), 0)
+        else:
+            self.rect.y = min(self.rect.y + int(self.vel), HEIGHT - PADDLE_HEIGHT)
+
+    def apply_recoil(self, impulse):
+        self.vel += impulse
+
+    def ai_move(self, target_y):
+        center = self.rect.centery
+        if center < target_y:
+            self.move(self.speed)
+        elif center > target_y:
+            self.move(-self.speed)
+        else:
+            self.move(0)
+
+    def draw(self, surf):
+        body_color = palette['fg']
+        fin_color = palette['accent']
+        draw_paddle_shape(surf, self.rect, body_color, fin_color)
+
+# Ball class with spin, drag, momentum transfer
+class Ball:
+    def __init__(self):
+        self.rect = pygame.Rect(WIDTH // 2 - BALL_SIZE // 2, WIDTH // 2 - BALL_SIZE // 2, BALL_SIZE, BALL_SIZE)
+        self.reset()
+        self.spin = 0.0
+
+    def reset(self, direction=None):
+        self.rect.center = (WIDTH // 2, HEIGHT // 2)
+        vx = BALL_SPEED if direction is None else BALL_SPEED * direction
+        vy = random.choice([-1, 1]) * random.uniform(2, 4)
+        self.vel = [vx, vy]
+        self.spin = 0.0
+        if direction is None and random.random() < 0.5:
+            self.vel[0] *= -1
+
+    def update(self, left_paddle, right_paddle):
+        # Apply spin (Magnus-like effect): spin slightly alters vertical velocity
+        if abs(self.spin) > 0.001:
+            self.vel[1] += self.spin * 0.12
+            self.spin *= SPIN_DECAY
+
+        # move ball
+        self.rect.x += int(self.vel[0])
+        self.rect.y += int(self.vel[1])
+
+        # Add particle trail with velocity-based spread
+        for _ in range(1):
+            px = self.rect.centerx + random.uniform(-2, 2)
+            py = self.rect.centery + random.uniform(-2, 2)
+            pvel = [ -self.vel[0]*0.04 + random.uniform(-0.8,0.8), -self.vel[1]*0.04 + random.uniform(-0.8,0.8)]
+            particles.append({'pos':[px,py],'vel':pvel,'life':random.uniform(0.3,0.9),'age':0,'color':palette['ball'],'size':random.uniform(2,4)})
+
+        # Top/bottom collision
+        if self.rect.top <= 0:
+            self.rect.top = 0
+            self.vel[1] *= -1
+            self.vel[0] *= 1.01
+            self.spin *= 0.6
+            play_hit_sound()
+        if self.rect.bottom >= HEIGHT:
+            self.rect.bottom = HEIGHT
+            self.vel[1] *= -1
+            self.vel[0] *= 1.01
+            self.spin *= 0.6
+            play_hit_sound()
+
+        # Paddle collisions with momentum and spin transfer
+        if self.rect.colliderect(left_paddle.rect) and self.vel[0] < 0:
+            offset = (self.rect.centery - left_paddle.rect.centery) / (PADDLE_HEIGHT / 2)
+            spin_from_paddle = left_paddle.vel * SPIN_FACTOR + offset * 1.0
+            self._bounce(left_paddle, spin_from_paddle)
+            left_paddle.apply_recoil(-PADDLE_RECOIL * math.copysign(1, self.vel[0]))
+            play_hit_sound()
+
+        if self.rect.colliderect(right_paddle.rect) and self.vel[0] > 0:
+            offset = (self.rect.centery - right_paddle.rect.centery) / (PADDLE_HEIGHT / 2)
+            spin_from_paddle = right_paddle.vel * SPIN_FACTOR + offset * 1.0
+            self._bounce(right_paddle, spin_from_paddle)
+            right_paddle.apply_recoil(PADDLE_RECOIL * math.copysign(1, self.vel[0]))
+            play_hit_sound()
+
+        # Apply drag to limit runaway speeds and add small damping
+        self.vel[0] *= BALL_DRAG
+        self.vel[1] *= BALL_DRAG
+
+        # Cap speed
+        spd = math.hypot(self.vel[0], self.vel[1])
+        if spd > BALL_MAX_SPEED:
+            scale = BALL_MAX_SPEED / spd
+            self.vel[0] *= scale
+            self.vel[1] *= scale
+
+    def _bounce(self, paddle, spin_input=0.0):
+        paddle_vy = paddle.vel
+        self.vel[0] = -self.vel[0] * BOUNCE_ELASTICITY
+        self.vel[1] += paddle_vy * (PADDLE_MASS / (PADDLE_MASS + BALL_MASS)) * 0.9
+        self.spin += spin_input * 0.9
+        if self.vel[0] == 0:
+            self.vel[0] = BALL_SPEED * (1 if random.random() < 0.5 else -1)
+
+    def draw(self, surf):
+        cx, cy = self.rect.center
+        glow_surf = pygame.Surface((self.rect.width*6, self.rect.height*6), pygame.SRCALPHA)
+        g_radius = int(max(self.rect.width, self.rect.height)*2.5)
+        for i in range(g_radius, 0, -4):
+            alpha = int(25 * (1 - i / g_radius))
+            col = (*palette['ball'], alpha)
+            pygame.draw.circle(glow_surf, col, (glow_surf.get_width()//2, glow_surf.get_height()//2), i)
+        surf.blit(glow_surf, (cx - glow_surf.get_width()//2, cy - glow_surf.get_height()//2), special_flags=pygame.BLEND_PREMULTIPLIED)
+        pts = regular_star_points(cx, cy, self.rect.width, self.rect.width*0.45, 5)
+        pygame.draw.polygon(surf, palette['ball'], pts)
+        pygame.draw.circle(surf, palette['fg'], (cx, cy), int(self.rect.width*0.25))
+
+# update_particles fixed (removed stray quote)
+def update_particles(dt):
+    # update small trail particles
+    for p in particles[:]:
+        p['age'] += dt
+        p['pos'][0] += p['vel'][0] * 60 * dt
+        p['pos'][1] += p['vel'][1] * 60 * dt
+        # apply slight gravity-ish or downward bias for style (small)
+        p['vel'][1] += 0.08 * dt * 60
+        if p['age'] >= p['life']:
+            particles.remove(p)
+    # update explosion particles with damping
+    for p in explosion_particles[:]:
+        p['age'] += dt
+        p['pos'][0] += p['vel'][0] * 60 * dt
+        p['pos'][1] += p['vel'][1] * 60 * dt
+        # dampen velocities to simulate air resistance
+        p['vel'][0] *= 0.985
+        p['vel'][1] *= 0.985
+        # gravity pull for explosion bits
+        p['vel'][1] += 0.45 * dt * 60
+        if p['age'] >= p['life']:
+            explosion_particles.remove(p)
+
+# Remaining game code (drawing, main loop) is unchanged and kept as in previous commit.
