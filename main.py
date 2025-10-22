@@ -30,7 +30,7 @@ try:
 except Exception:
     NUMPY_AVAILABLE = False
 
-# Try winsound on Windows as a fallback
+# Try winsound on Windows as a fallback change
 try:
     if platform.system() == "Windows":
         import winsound
