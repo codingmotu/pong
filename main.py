@@ -81,7 +81,7 @@ try:
 except Exception:
     pygame_mixer_available = False
 
-hit_sound = Nones
+hit_sound = None
 score_sound = None
 explosion_sound = None
 
