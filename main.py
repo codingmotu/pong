@@ -105,7 +105,7 @@ def make_sine_sound(freq=440, duration_ms=120, volume=0.3, sample_rate=44100):
         return None
 
 def try_load_sound(path):
-    """Tries loading a WAV files via pygame mixer; return a Sound or None."""
+    """Tries loading a WAVe files via pygame mixer; return a Sound or None."""
     if not pygame_mixer_available:
         return None
     try:
